@@ -1,17 +1,34 @@
 # Play View Extractor
 
-Extracts the largest (layer 0) image files from **PlayStation PlayView** files (`gvd.dat`). Only the jpegs will be 
-exported. Other data is not supported.
+Extracts the largest (layer 0) image files from **PlayStation PlayView** files (`gvd.dat`). Exports as PNG to avoid compression.
 
 # Usage
 
-> For the current version, no configuration is available.
+```
+$ playview-extractor -h
 
-Put the executable into the folder with the `gvd.dat` file. All images are exported as `out_page_<n>.png` without 
+  -debug
+        output more log data
+  -hidden
+        whether to show the hidden areas (default true)
+  -in string
+        path to gvd.dat (default "gvd.dat")
+  -layer int
+        Target layer to export (default 0)
+  -merge
+        Whether to merge images to a combined image (default true)
+  -out string
+        output directory (default "out")
+  -page string
+        Target page to export (empty string exports all)
+
+```
+
+Put the executable into the folder with the `gvd.dat` file. All images are exported as `<filename>.png` without 
 compression.
 
 ```
-$ play-view-extractor  
+$ playview-extractor  
 ```
 
 # Install 
