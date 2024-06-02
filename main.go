@@ -16,8 +16,20 @@ import (
 	"image/png"
 	"log"
 	"os"
+	"path"
 	"strings"
 )
+
+// Configuration
+
+var MergeImages = true
+var TargetLayer = 0
+var TargetPage = ""
+var OutDir = "out"
+var FilePath = "gvd.dat"
+var LogDebug = false
+
+// Global Data
 
 var totalDataEntries int
 var totalLengthFirstPart int
@@ -62,7 +74,15 @@ type ImageInfo struct {
 var pages []PageInfo
 
 func main() {
-	gvdHandle, err := os.Open("gvd.dat")
+	if _, err := os.Stat(OutDir); err != nil {
+		// Check if the output folder exists.
+		err := os.Mkdir(OutDir, os.ModeDir)
+		if err != nil {
+			panic(err)
+		}
+	}
+
+	gvdHandle, err := os.Open(FilePath)
 	if err != nil {
 		panic(err)
 	}
@@ -89,6 +109,13 @@ func readDatabase(f *os.File) error {
 
 	for i := int(0); i < totalDataEntries; i++ {
 
+		// Only export the requested pages.
+		if TargetPage != "" && TargetPage != pages[i].fileName {
+			continue
+		}
+
+		log.Printf("  > Handle [%v]", pages[i].fileName)
+
 		// Jump to database.
 		_, _ = f.Seek(int64(totalLengthFirstPart+pages[i].offsetDataBaseViewer), 0)
 
@@ -103,18 +130,15 @@ func readDatabase(f *os.File) error {
 
 		// Read Length
 		pages[i].imageWidth, _ = readUint32(f)
-		log.Printf("[%v] length: %v", i, pages[i].imageWidth)
 
 		// Read Heigth
 		pages[i].imageHeight, _ = readUint32(f)
-		log.Printf("[%v] height: %v", i, pages[i].imageHeight)
 
 		// Read BLK
 		readCompare(f, []byte{0x42, 0x4C, 0x4B, 0x5F})
 
 		// Length Database
 		pages[i].lengthDatabase, _ = readUint32(f)
-		log.Printf("[%v] lengthDatabase: %v", i, pages[i].lengthDatabase)
 
 		// DATABASES START
 		readCompare(f, []byte{00, 00, 00, 01, 00, 00, 00, 00})
@@ -122,12 +146,18 @@ func readDatabase(f *os.File) error {
 		// 0028 	4 	00 00 00 20 	each entrance length: 0X20
 		pages[i].entranceLength, _ = readUint32(f)
 		// readCompare(f, []byte{0x00, 0x00, 0x00, 0x20})
-		log.Printf("[%v] entryLength: %v", i, pages[i].entranceLength)
 
 		// 002C 	4 	00 00 00 04 	each parameter length: 0X04
 		pages[i].paramLength, _ = readUint32(f)
 		// readCompare(f, []byte{0x00, 0x00, 0x00, 0x04})
-		log.Printf("[%v] paramLength: %v", i, pages[i].paramLength)
+
+		if LogDebug {
+			log.Printf("[%v] length: %v", i, pages[i].imageWidth)
+			log.Printf("[%v] height: %v", i, pages[i].imageHeight)
+			log.Printf("[%v] lengthDatabase: %v", i, pages[i].lengthDatabase)
+			log.Printf("[%v] entryLength: %v", i, pages[i].entranceLength)
+			log.Printf("[%v] paramLength: %v", i, pages[i].paramLength)
+		}
 
 		// Read images
 		numImages := pages[i].lengthDatabase / pages[i].entranceLength
@@ -159,7 +189,9 @@ func readDatabase(f *os.File) error {
 				panic("not implemented")
 			}
 
-			log.Printf("   > %#v", pages[i].images[j])
+			if LogDebug {
+				log.Printf("   > %#v", pages[i].images[j])
+			}
 		}
 
 		// Read BLK
@@ -167,57 +199,123 @@ func readDatabase(f *os.File) error {
 
 		// XXXX 	4 	xx xx xx xx 	Total length embedded images (with FF padding)
 		pages[i].lengthImages, _ = readUint32(f)
-		log.Printf("[%v] lengthImages: %v", i, pages[i].lengthImages)
+
+		if LogDebug {
+			log.Printf("[%v] lengthImages: %v", i, pages[i].lengthImages)
+		}
 
 		// START IMAGES
 		readCompare(f, []byte{00, 00, 00, 02, 00, 00, 00, 00})
 
-		// Skip non images for now.
-		if pages[i].imageType != "jpeg" {
-			continue
-		}
-
 		// Create a new image
-		newImage := image.NewRGBA(image.Rect(0, 0, pages[i].imageWidth, pages[i].imageHeight))
+		mergedImages := map[int]draw.Image{}
+
+		// Detect overlaps.
+		handled := map[string]bool{}
+
+		// Track if any data has been added.
+		hasAnyImageData := false
 
 		for j := 0; j < numImages; j++ {
 
-			// Skip if not layer 0.
-			if pages[i].images[j].layer != 0 {
+			// Skip if not the targeted layer.
+			layer := pages[i].images[j].layer
+			if TargetLayer != -1 && layer != TargetLayer {
 				_, _ = f.Seek(int64(pages[i].images[j].fileLength+pages[i].images[j].fileLengthPadding), 1)
 				continue
 			}
 
-			// Load the image.
-			rawImage, _ := readBytes(f, pages[i].images[j].fileLength)
-			img, err := jpeg.Decode(bytes.NewBuffer(rawImage))
-			if err != nil {
-				return fmt.Errorf("unable to decode image: %v", j)
+			// Lazily create the merged images for all layers.
+			mergedImage, exists := mergedImages[layer]
+			if !exists {
+				mergedImage = image.NewRGBA(image.Rect(0, 0, pages[i].imageWidth, pages[i].imageHeight))
+				mergedImages[layer] = mergedImage
 			}
 
-			// merge images.
-			x := pages[i].images[j].gridPosW * 256
-			y := pages[i].images[j].gridPosH * 256
-			bounds := img.Bounds()
-			draw.Draw(newImage, image.Rect(x, y, x+bounds.Dx(), y+bounds.Dy()), img, bounds.Min, draw.Over)
+			// Load the image.
+			rawImage, _ := readBytes(f, pages[i].images[j].fileLength)
+			if pages[i].imageType == "gvmp" {
+				// EXPERIMENTAL:
+				// Ignore the first 32 bytes to load the gvmp image.
+				log.Printf("DUMP %x", rawImage[:32])
+				rawImage = rawImage[32:]
+			}
+			singleImage, err := jpeg.Decode(bytes.NewBuffer(rawImage))
+			if err != nil {
+				// [Not an image]
+
+				// Export raw for analysis.
+				rawFile, err := os.Create(path.Join(OutDir, fmt.Sprintf("%v_%v.raw", pages[i].fileName, j)))
+				if err != nil {
+					return fmt.Errorf("unable to open file: %v", err)
+				}
+				_, writeErr := rawFile.Write(rawImage)
+				if writeErr != nil {
+					return fmt.Errorf("unable to write raw data: %v", err)
+				}
+				closeErr := rawFile.Close()
+				if closeErr != nil {
+					return fmt.Errorf("unable to close output file: %v", err)
+				}
+
+			} else {
+				// [Image]
+				hasAnyImageData = true
+
+				// Check if a file is overlapping.
+				handleKey := fmt.Sprintf("%v-%v", pages[i].images[j].gridPosW, pages[i].images[j].gridPosH)
+				if _, exists := handled[handleKey]; exists {
+					log.Printf("  [WARNING] Overlapping image at %, %v detected.", pages[i].images[j].gridPosW, pages[i].images[j].gridPosH)
+				}
+				handled[handleKey] = true
+
+				if MergeImages {
+					// [Build the merged image]
+					x := pages[i].images[j].gridPosW * 256
+					y := pages[i].images[j].gridPosH * 256
+					bounds := singleImage.Bounds()
+					draw.Draw(mergedImage, image.Rect(x, y, x+bounds.Dx(), y+bounds.Dy()), singleImage, bounds.Min, draw.Over)
+				} else {
+					// [Save each image without merging]
+					imgFile, err := os.Create(path.Join(OutDir, fmt.Sprintf("%v_%v.png", pages[i].fileName, j)))
+					if err != nil {
+						return fmt.Errorf("unable to open file: %v", err)
+					}
+					err = jpeg.Encode(imgFile, singleImage, nil)
+					if err != nil {
+						return fmt.Errorf("unable to encode png: %v", err)
+					}
+					closeErr := imgFile.Close()
+					if closeErr != nil {
+						return fmt.Errorf("unable to close output file: %v", err)
+					}
+				}
+			}
 
 			// Skip padding.
 			_, _ = f.Seek(int64(pages[i].images[j].fileLengthPadding), 1)
 		}
 
-		// Save the image
-		imgFile, err := os.Create(fmt.Sprintf("out_page_%v.png", i))
-		if err != nil {
-			return fmt.Errorf("unable to open file: %v", err)
+		if MergeImages && hasAnyImageData {
+			for layer, mergedImage := range mergedImages {
+				// [Save the merged image]
+				imgFile, err := os.Create(path.Join(OutDir, fmt.Sprintf("%v_layer_%v.png", pages[i].fileName, layer)))
+				if err != nil {
+					return fmt.Errorf("unable to open file: %v", err)
+				}
+				err = png.Encode(imgFile, mergedImage)
+				if err != nil {
+					return fmt.Errorf("unable to encode jpeg: %v", err)
+				}
+				closeErr := imgFile.Close()
+				if closeErr != nil {
+					return fmt.Errorf("unable to close output file: %v", err)
+				}
+			}
+
 		}
-		err = png.Encode(imgFile, newImage)
-		if err != nil {
-			return fmt.Errorf("unable to encode jpeg: %v", err)
-		}
-		closeErr := imgFile.Close()
-		if closeErr != nil {
-			return fmt.Errorf("unable to close output file: %v", err)
-		}
+
+		log.Printf("   .. Exported")
 
 	}
 
@@ -245,9 +343,11 @@ func readFileNames(f *os.File) error {
 		if err != nil {
 			return fmt.Errorf("unable to read filename %v : %v", i, err)
 		}
-		pages[i].fileName = nextName
+		pages[i].fileName, _ = strings.CutSuffix(nextName, ".gvd")
 
-		log.Printf(" > %v", nextName)
+		if LogDebug {
+			log.Printf(" > %v", nextName)
+		}
 	}
 
 	log.Printf(" >> File names done.")
@@ -277,14 +377,16 @@ func readHeader(f *os.File) error {
 	if err != nil {
 		return err
 	}
-	log.Printf("totalDataEntries: %v", totalDataEntries)
+	log.Printf("Number of Pages: %v", totalDataEntries)
 
 	// 000C 4 Total Length first part/start second part (first image id.gvd)
 	totalLengthFirstPart, err = readUint32(f)
 	if err != nil {
 		return err
 	}
-	log.Printf("totalLengthFirstPart: %v", totalLengthFirstPart)
+	if LogDebug {
+		log.Printf("totalLengthFirstPart: %v", totalLengthFirstPart)
+	}
 
 	pages = make([]PageInfo, totalDataEntries)
 
@@ -296,29 +398,31 @@ func readHeader(f *os.File) error {
 		if err != nil {
 			return err
 		}
-		log.Printf("[Page %v] offsetFileName: %v", i, pages[i].offsetFileName)
 
 		// 0014 4 Length file name.gvd (00 is not counted)
 		pages[i].lengthFileName, err = readUint32(f)
 		if err != nil {
 			return err
 		}
-		log.Printf("[Page %v] lengthFileName: %v", i, pages[i].lengthFileName)
 
 		// 0018 4 Offset Data Base Viewer
 		pages[i].offsetDataBaseViewer, err = readUint32(f)
 		if err != nil {
 			return err
 		}
-		log.Printf("[Page %v] offsetDataBaseViewer: %v", i, pages[i].offsetDataBaseViewer)
 
 		// 001C 4 Length Data base Viewer file
 		pages[i].lengthDataBaseViewer, err = readUint32(f)
 		if err != nil {
 			return err
 		}
-		log.Printf("[Page %v] lengthDataBaseViewer: %v", i, pages[i].lengthDataBaseViewer)
 
+		if LogDebug {
+			log.Printf("[Page %v] offsetFileName: %v", i, pages[i].offsetFileName)
+			log.Printf("[Page %v] lengthFileName: %v", i, pages[i].lengthFileName)
+			log.Printf("[Page %v] offsetDataBaseViewer: %v", i, pages[i].offsetDataBaseViewer)
+			log.Printf("[Page %v] lengthDataBaseViewer: %v", i, pages[i].lengthDataBaseViewer)
+		}
 	}
 
 	// 0XXX xx Filled with 00 until the first image ID.gvd start
