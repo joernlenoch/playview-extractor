@@ -14,6 +14,14 @@ compression.
 $ play-view-extractor  
 ```
 
+# Install 
+
+You can use golang to build from source and install the extractor locally.
+
+```
+go install https://github.com/joernlenoch/playview-extractor/
+```
+
 # Build
 
 This is a simple golang 1.22 project.
