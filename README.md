@@ -1,6 +1,6 @@
 # Play View Extractor
 
-Extracts the largest (layer 0) image files form **PlayStation PlayView** files (`gvd.dat`). Only the jpegs will be 
+Extracts the largest (layer 0) image files from **PlayStation PlayView** files (`gvd.dat`). Only the jpegs will be 
 exported. Other data is not supported.
 
 # Usage
@@ -23,4 +23,4 @@ This is a simple golang 1.22 project.
 
 # Special Thanks
 
-Special thanks to the detailed file format information at https://www.psdevwiki.com/vita/PlayView#Description.
+Special thanks to the detailed file format information at https://www.psdevwiki.com/vita/PlayView
