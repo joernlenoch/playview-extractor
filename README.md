@@ -36,7 +36,7 @@ $ playview-extractor
 You can use golang to build from source and install the extractor locally.
 
 ```
-go install https://github.com/joernlenoch/playview-extractor/
+go install github.com/joernlenoch/playview-extractor/@latest
 ```
 
 # Build
