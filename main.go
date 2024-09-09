@@ -16,6 +16,7 @@ import (
 	"image/jpeg"
 	"image/png"
 	"log"
+	"math/big"
 	"os"
 	"path"
 	"strings"
@@ -30,6 +31,8 @@ var OutDir string
 var FilePath string
 var LogDebug bool
 var LoadFullImages bool
+
+var LittleEndian bool = false
 
 // Global Data
 
@@ -180,14 +183,18 @@ func readDatabase(f *os.File) error {
 		// Read Heigth
 		pages[i].imageHeight, _ = readUint32(f)
 
-		// Read BLK
+		// Read "BLK_"
 		readCompare(f, []byte{0x42, 0x4C, 0x4B, 0x5F})
 
 		// Length Database
 		pages[i].lengthDatabase, _ = readUint32(f)
 
 		// DATABASES START
-		readCompare(f, []byte{00, 00, 00, 01, 00, 00, 00, 00})
+		if !LittleEndian {
+			readCompare(f, []byte{00, 00, 00, 01, 00, 00, 00, 00})
+		} else {
+			readCompare(f, []byte{01, 00, 00, 00, 00, 00, 00, 00})
+		}
 
 		// 0028 	4 	00 00 00 20 	each entrance length: 0X20
 		pages[i].entranceLength, _ = readUint32(f)
@@ -237,7 +244,7 @@ func readDatabase(f *os.File) error {
 			}
 		}
 
-		// Read BLK
+		// Read "BLK_"
 		readCompare(f, []byte{0x42, 0x4C, 0x4B, 0x5F})
 
 		// XXXX 	4 	xx xx xx xx 	Total length embedded images (with FF padding)
@@ -248,7 +255,11 @@ func readDatabase(f *os.File) error {
 		}
 
 		// START IMAGES
-		readCompare(f, []byte{00, 00, 00, 02, 00, 00, 00, 00})
+		if !LittleEndian {
+			readCompare(f, []byte{00, 00, 00, 02, 00, 00, 00, 00})
+		} else {
+			readCompare(f, []byte{02, 00, 00, 00, 00, 00, 00, 00})
+		}
 
 		// Create a new image
 		mergedImage := image.NewRGBA(image.Rect(0, 0, pages[i].imageWidth, pages[i].imageHeight))
@@ -287,13 +298,34 @@ func readDatabase(f *os.File) error {
 				}
 
 				readCompare(f, []byte{0x47, 0x56, 0x4D, 0x50}) // Header "GVMP".
-				readCompare(f, []byte{0x00, 0x00, 0x00, 0x02}) // Unused ? Maybe number of images? 2
-				readCompare(f, []byte{0x00, 0x00, 0x00, 0x20}) // Unused ? Maybe header length? 32
-				imageLength, _ := readUint32(f)                // file length
-				paddedImageLength, _ := readUint32(f)          // Only if paddedImageLength != 32
-				secondImageLength, _ := readUint32(f)          // Only if paddedImageLength != 32
-				readCompare(f, []byte{0x00, 0x00, 0x00, 0x00}) // Unused ? Maybe padding? 0
-				readCompare(f, []byte{0x00, 0x00, 0x00, 0x00}) // Unused ? Maybe padding? 0
+
+				// OLD: readCompare(f, []byte{0x00, 0x00, 0x00, 0x02}) // Unused ? Maybe number of images? 2
+				unusedA, _ := readUint32(f)
+				if unusedA != 2 {
+					log.Panicf("expected '2' but got %v", unusedA)
+				}
+
+				// OLD: readCompare(f, []byte{0x00, 0x00, 0x00, 0x20}) // Unused ? Maybe header length? 32
+				unusedB, _ := readUint32(f)
+				if unusedB != 32 {
+					log.Panicf("expected '32' but got %v", unusedA)
+				}
+
+				imageLength, _ := readUint32(f)       // file length
+				paddedImageLength, _ := readUint32(f) // Only if paddedImageLength != 32
+				secondImageLength, _ := readUint32(f) // Only if paddedImageLength != 32
+
+				// OLD readCompare(f, []byte{0x00, 0x00, 0x00, 0x00}) // Unused ? Maybe padding? 0
+				unusedC, _ := readUint32(f)
+				if unusedC != 0 {
+					log.Panicf("expected '0' but got %v", unusedA)
+				}
+
+				// OLD readCompare(f, []byte{0x00, 0x00, 0x00, 0x00}) // Unused ? Maybe padding? 0
+				unusedD, _ := readUint32(f)
+				if unusedD != 0 {
+					log.Panicf("expected '0' but got %v", unusedA)
+				}
 
 				if LogDebug {
 					log.Printf("(A) %v; %v; %v", imageLength, paddedImageLength, secondImageLength)
@@ -462,6 +494,18 @@ func readHeader(f *os.File) error {
 	if err != nil {
 		return err
 	}
+
+	// Automagically swap to little endian encoding.
+	if totalDataEntries > 10000 {
+		if LogDebug {
+			log.Printf("[!] Switching to little endian encoding!")
+		}
+
+		asBytes := big.NewInt(int64(totalDataEntries)).Bytes()
+		totalDataEntries = int(binary.LittleEndian.Uint32(asBytes))
+		LittleEndian = true
+	}
+
 	log.Printf("Number of Pages: %v", totalDataEntries)
 
 	// 000C 4 Total Length first part/start second part (first image id.gvd)
@@ -537,6 +581,10 @@ func readUint32(f *os.File) (int, error) {
 	raw, err := readBytes(f, 4)
 	if err != nil {
 		return 0, err
+	}
+
+	if LittleEndian {
+		return int(binary.LittleEndian.Uint32(raw)), nil
 	}
 	return int(binary.BigEndian.Uint32(raw)), nil
 }
