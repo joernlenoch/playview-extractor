@@ -11,6 +11,7 @@ import (
 	"encoding/binary"
 	"flag"
 	"fmt"
+	"github.com/robroyd/dds"
 	"image"
 	"image/draw"
 	"image/jpeg"
@@ -360,9 +361,29 @@ func readDatabase(f *os.File) error {
 				rawImage, _ = readBytes(f, pages[i].images[j].fileLength)
 			}
 
-			singleImage, err := jpeg.Decode(bytes.NewBuffer(rawImage))
-			if err != nil {
-				// [Not an image]
+			// TODO:
+			//   For some reason, the file length padding does not work when DDS file
+			//   are being loaded... Might have another reason. So only skip if
+			//   the jpeg could not be loaded.
+			var addFilePadding bool = true
+
+			singleImage, jpegDecodeErr := jpeg.Decode(bytes.NewBuffer(rawImage))
+
+			// If the jpeg decode fails, try to DDS file format.
+			var ddsDecodeErr error
+
+			if jpegDecodeErr != nil {
+
+				addFilePadding = false
+
+				singleImage, ddsDecodeErr = dds.Decode(bytes.NewBuffer(rawImage))
+				if ddsDecodeErr != nil {
+					log.Printf("unable to decode as dds: %v", ddsDecodeErr)
+				}
+			}
+
+			if jpegDecodeErr != nil && ddsDecodeErr != nil {
+				// [Not an image?]
 
 				// Export raw for analysis.
 				rawFile, err := os.Create(path.Join(OutDir, fmt.Sprintf("%v_%v.raw", pages[i].fileName, j)))
@@ -411,8 +432,10 @@ func readDatabase(f *os.File) error {
 					}
 				}
 
-				// Skip padding.
-				_, _ = f.Seek(int64(pages[i].images[j].fileLengthPadding), 1)
+				// Skip padding if necessary.
+				if addFilePadding {
+					_, _ = f.Seek(int64(pages[i].images[j].fileLengthPadding), 1)
+				}
 			}
 		}
 
